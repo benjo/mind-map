@@ -1,2 +1,1 @@
-# mind-map
-Mind Map Tool
+Mind map tool
