@@ -199,6 +199,51 @@ body {
   0%, 100% { box-shadow: 0 0 8px rgba(162,155,254,0.35); }
   50%       { box-shadow: 0 0 18px rgba(162,155,254,0.65); }
 }
+/* ── SAVE / OPEN BUTTONS ─────────────────────── */
+.btn.save-btn {
+  background: linear-gradient(135deg, #1a3a2a 0%, #1e1e2a 100%);
+  border-color: #00b894;
+  color: #55efc4;
+}
+.btn.save-btn:hover {
+  background: linear-gradient(135deg, #1f4a33 0%, #2a2a3d 100%);
+  border-color: #55efc4;
+  box-shadow: 0 0 10px rgba(0,184,148,0.35);
+}
+.btn.open-btn {
+  background: linear-gradient(135deg, #1a2a3a 0%, #1e1e2a 100%);
+  border-color: #0984e3;
+  color: #74b9ff;
+}
+.btn.open-btn:hover {
+  background: linear-gradient(135deg, #1f3a4a 0%, #2a2a3d 100%);
+  border-color: #74b9ff;
+  box-shadow: 0 0 10px rgba(9,132,227,0.35);
+}
+
+/* Toast notification */
+#toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 12.5px;
+  color: var(--text);
+  z-index: 9999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+  white-space: nowrap;
+}
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 /* Cursor when format-painter mode is active */
 body.painting #canvas { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23a29bfe' d='M18 4H6a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h5v2l-3 6h2l3-6V10h5a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z'/%3E%3C/svg%3E") 4 20, crosshair; }
 /* Highlight nodes on hover during painting mode */
@@ -266,6 +311,15 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
   </button>
 
   <div class="sep"></div>
+  <button class="btn save-btn" id="b-save" title="Sauvegarder la mind map (Ctrl+S)">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Sauvegarder
+  </button>
+  <button class="btn open-btn" id="b-open" title="Ouvrir une mind map sauvegardée (Ctrl+O)">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Ouvrir
+  </button>
+  <input type="file" id="file-open" accept=".html" style="display:none">
+
+  <div class="sep"></div>
   <button class="btn layout-btn" id="b-layout" title="Réorganiser automatiquement la mind map (Ctrl+L)">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
       <circle cx="12" cy="12" r="3"/>
@@ -306,12 +360,17 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
     <span class="hint">Double-clic</span> éditer ·
     <span class="hint">Molette</span> zoom ·
     <span class="hint">Espace</span> centrer ·
-    <span class="hint">Ctrl+L</span> auto-orga
+    <span class="hint">Ctrl+L</span> auto-orga ·
+    <span class="hint">Ctrl+S</span> sauvegarder ·
+    <span class="hint">Ctrl+O</span> ouvrir
   </span>
 </div>
 
 <!-- INLINE EDITOR -->
 <input id="editor" type="text" />
+
+<!-- TOAST -->
+<div id="toast"></div>
 
 <!-- CONTEXT MENU -->
 <div id="ctx">
@@ -813,6 +872,105 @@ $('b-export').addEventListener('click',  () => {
 });
 
 // ═══════════════════════════════════════════════
+//  TOAST
+// ═══════════════════════════════════════════════
+let _toastTimer = null;
+function showToast(msg, color = '#55efc4') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.borderColor = color;
+  t.style.color = color;
+  t.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// ═══════════════════════════════════════════════
+//  SAVE STATE  (Ctrl+S)
+// ═══════════════════════════════════════════════
+function saveState() {
+  const state = {
+    nodes:  S.nodes,
+    rootId: S.rootId,
+    panX:   S.panX,
+    panY:   S.panY,
+    zoom:   S.zoom
+  };
+  const json = JSON.stringify(state);
+
+  // Embed state in page HTML
+  let html = document.documentElement.outerHTML;
+
+  // Remove any previously embedded state block
+  html = html.replace(/<script id="__mindmap_state__"[^>]*>[\s\S]*?<\/script>\s*/g, '');
+
+  // Inject state block just before </body>
+  const stateTag = `<script id="__mindmap_state__" type="application/json">${json}<\/script>\n`;
+  html = html.replace('</body>', stateTag + '</body>');
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'mindmap.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+
+  showToast('✓ Mind map sauvegardée', '#55efc4');
+}
+
+// ═══════════════════════════════════════════════
+//  OPEN STATE  (Ctrl+O)
+// ═══════════════════════════════════════════════
+function openState() {
+  $('file-open').value = '';   // reset so same file can be re-loaded
+  $('file-open').click();
+}
+
+$('file-open').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = evt => {
+    const html = evt.target.result;
+
+    // Extract embedded state
+    const match = html.match(/<script id="__mindmap_state__"[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) {
+      showToast('⚠ Aucun état trouvé dans ce fichier', '#e17055');
+      return;
+    }
+    try {
+      const state = JSON.parse(match[1]);
+
+      // Restore global state
+      S.nodes     = state.nodes;
+      S.rootId    = state.rootId;
+      S.panX      = state.panX  ?? S.panX;
+      S.panY      = state.panY  ?? S.panY;
+      S.zoom      = state.zoom  ?? 1;
+      S.selId     = null;
+      S.clipboard = null;
+      S.fmtClip   = null;
+      S.drag      = null;
+      S.panning   = false;
+      S.panStart  = null;
+      if (S.painting) exitPainter();
+
+      applyTransform();
+      render();
+      select(S.rootId);
+      showToast('✓ Mind map chargée — ' + Object.keys(S.nodes).length + ' nœuds', '#74b9ff');
+    } catch (err) {
+      showToast('⚠ Erreur de lecture : ' + err.message, '#e17055');
+    }
+  };
+  reader.readAsText(file, 'utf-8');
+});
+
+$('b-save').addEventListener('click', saveState);
+$('b-open').addEventListener('click', openState);
+
+// ═══════════════════════════════════════════════
 //  KEYBOARD SHORTCUTS
 // ═══════════════════════════════════════════════
 document.addEventListener('keydown', e => {
@@ -824,6 +982,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'F2') { startEdit(id); }
   else if (e.key === ' ')  { e.preventDefault(); centerView(); }
   else if (e.ctrlKey && e.key === 'l') { e.preventDefault(); autoLayout(); }
+  else if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveState(); }
+  else if (e.ctrlKey && e.key === 'o') { e.preventDefault(); openState(); }
   else if (e.key === 'Escape') { if (S.painting) exitPainter(); else deselect(); }
   else if (e.altKey  && e.key === 'c') { e.preventDefault(); if (id) { copyFormat(id); } }
   else if (e.altKey  && e.key === 'v') { e.preventDefault(); if (id) { applyFormat(id); render(); } }
@@ -966,8 +1126,25 @@ function autoLayout() {
 // ═══════════════════════════════════════════════
 function init() {
 
-  const root = new Node('X', 0, 0, null);
-  root.color = '#4DBB9F'; root.fontSize = 14; root.fontFamily = 'Lato';
+  // ── Restore saved state if embedded in this file ──
+  const savedEl = document.getElementById('__mindmap_state__');
+  if (savedEl) {
+    try {
+      const state = JSON.parse(savedEl.textContent);
+      S.nodes  = state.nodes;
+      S.rootId = state.rootId;
+      S.panX   = state.panX ?? 0;
+      S.panY   = state.panY ?? 0;
+      S.zoom   = state.zoom ?? 1;
+      applyTransform();
+      render();
+      select(S.rootId);
+      return;   // skip default scaffold
+    } catch (e) { /* fall through and build fresh map */ }
+  }
+
+  // ── Default starter map ──
+  const root = new Node('X', 0, 0, null);  root.color = '#4DBB9F'; root.fontSize = 14; root.fontFamily = 'Lato';
   S.nodes[root.id] = root; S.rootId = root.id;
 
   const b1 = new Node('X', 190, -100, root.id);
