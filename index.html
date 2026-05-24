@@ -199,6 +199,25 @@ body {
   0%, 100% { box-shadow: 0 0 8px rgba(162,155,254,0.35); }
   50%       { box-shadow: 0 0 18px rgba(162,155,254,0.65); }
 }
+/* ── HORIZONTAL LAYOUT BUTTON ────────────────── */
+.btn.layout-h-btn {
+  background: linear-gradient(135deg, #1a3a2a 0%, #1e1e2a 100%);
+  border-color: #00b894;
+  color: #55efc4;
+}
+.btn.layout-h-btn:hover {
+  background: linear-gradient(135deg, #1f4a33 0%, #2a2a3d 100%);
+  border-color: #55efc4;
+  box-shadow: 0 0 12px rgba(0,184,148,0.4);
+}
+.btn.layout-h-btn.running {
+  pointer-events: none;
+  opacity: 0.7;
+}
+.btn.layout-h-btn.running svg {
+  animation: layout-spin 0.5s linear infinite;
+}
+
 /* ── SAVE / OPEN BUTTONS ─────────────────────── */
 .btn.save-btn {
   background: linear-gradient(135deg, #1a3a2a 0%, #1e1e2a 100%);
@@ -337,7 +356,19 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
       <line x1="9.4" y1="10.5" x2="5.5" y2="8" stroke="currentColor" stroke-width="1.5"/>
     </svg>Auto-orga
   </button>
-</div>
+  <button class="btn layout-h-btn" id="b-layout-h" title="Réorganiser en organigramme horizontal vers la droite (Ctrl+H)">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <rect x="1"  y="9"  width="6" height="6" rx="1.5"/>
+      <rect x="17" y="2"  width="6" height="6" rx="1.5"/>
+      <rect x="17" y="9"  width="6" height="6" rx="1.5"/>
+      <rect x="17" y="16" width="6" height="6" rx="1.5"/>
+      <line x1="7"  y1="12" x2="12" y2="12"/>
+      <line x1="12" y1="5"  x2="12" y2="19"/>
+      <line x1="12" y1="5"  x2="17" y2="5"/>
+      <line x1="12" y1="12" x2="17" y2="12"/>
+      <line x1="12" y1="19" x2="17" y2="19"/>
+    </svg>Orga →
+  </button>
 
 <!-- SVG CANVAS -->
 <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
@@ -361,6 +392,7 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
     <span class="hint">Molette</span> zoom ·
     <span class="hint">Espace</span> centrer ·
     <span class="hint">Ctrl+L</span> auto-orga ·
+    <span class="hint">Ctrl+H</span> orga → ·
     <span class="hint">Ctrl+S</span> sauvegarder ·
     <span class="hint">Ctrl+O</span> ouvrir
   </span>
@@ -863,6 +895,7 @@ $('b-paste').addEventListener('click',   () => {
 $('b-painter').addEventListener('click', togglePainter);
 $('b-center').addEventListener('click',  () => { centerView(); });
 $('b-layout').addEventListener('click',  () => { autoLayout(); });
+$('b-layout-h').addEventListener('click', () => { autoLayoutHorizontal(); });
 $('b-export').addEventListener('click',  () => {
   const clone = svg.cloneNode(true);
   const blob  = new Blob([clone.outerHTML], { type: 'image/svg+xml' });
@@ -982,6 +1015,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'F2') { startEdit(id); }
   else if (e.key === ' ')  { e.preventDefault(); centerView(); }
   else if (e.ctrlKey && e.key === 'l') { e.preventDefault(); autoLayout(); }
+  else if (e.ctrlKey && e.key === 'h') { e.preventDefault(); autoLayoutHorizontal(); }
   else if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveState(); }
   else if (e.ctrlKey && e.key === 'o') { e.preventDefault(); openState(); }
   else if (e.key === 'Escape') { if (S.painting) exitPainter(); else deselect(); }
@@ -1122,7 +1156,154 @@ function autoLayout() {
 }
 
 // ═══════════════════════════════════════════════
-//  INIT — build starter map
+//  FIT TO VIEW  — zoom + pan so all nodes are visible
+// ═══════════════════════════════════════════════
+function fitToView(margin = 48) {
+  const nodes = Object.values(S.nodes);
+  if (nodes.length === 0) { centerView(); return; }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  nodes.forEach(n => {
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + (n.w || 100));
+    maxY = Math.max(maxY, n.y + (n.h || 36));
+  });
+
+  const r      = svg.getBoundingClientRect();
+  const treeW  = maxX - minX || 1;
+  const treeH  = maxY - minY || 1;
+  const scaleX = (r.width  - margin * 2) / treeW;
+  const scaleY = (r.height - margin * 2) / treeH;
+  S.zoom = Math.min(scaleX, scaleY, 2);   // cap zoom at 2×
+
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  S.panX = r.width  / 2 - cx * S.zoom;
+  S.panY = r.height / 2 - cy * S.zoom;
+  applyTransform();
+}
+
+// ═══════════════════════════════════════════════
+//  HORIZONTAL LAYOUT  (organigramme gauche → droite)
+// ═══════════════════════════════════════════════
+function autoLayoutHorizontal() {
+  const root = S.nodes[S.rootId];
+  if (!root) return;
+
+  // Refresh sizes
+  Object.values(S.nodes).forEach(computeSize);
+
+  const H_GAP = 72;   // gap between a node's right edge and its children's left edge
+  const V_GAP = 16;   // vertical gap between sibling boxes
+
+  // --- Pass 1: compute how much vertical space each subtree needs ---
+  function subtreeH(id) {
+    const node = S.nodes[id];
+    if (!node) return 0;
+    if (node.childIds.length === 0) return node.h + V_GAP;
+    return node.childIds.reduce((sum, cid) => sum + subtreeH(cid), 0);
+  }
+
+  // --- Pass 2: compute the maximum node width per depth level ---
+  //  so all nodes at the same depth start at the same X (clean columns)
+  const levelMaxW = {};
+  function collectLevelW(id, depth) {
+    const node = S.nodes[id]; if (!node) return;
+    computeSize(node);
+    levelMaxW[depth] = Math.max(levelMaxW[depth] || 0, node.w);
+    node.childIds.forEach(cid => collectLevelW(cid, depth + 1));
+  }
+  collectLevelW(S.rootId, 0);
+
+  // Cumulative x offset per depth: each level starts after the widest node of the previous level
+  const levelX = {};
+  let curX = 0;
+  const maxDepth = Math.max(...Object.keys(levelMaxW).map(Number));
+  for (let d = 0; d <= maxDepth; d++) {
+    levelX[d] = curX;
+    curX += (levelMaxW[d] || 100) + H_GAP;
+  }
+
+  const newPos = {};
+
+  // --- Pass 3: place nodes ---
+  // `id`      : current node
+  // `depth`   : depth level (0 = root)
+  // `topY`    : top of the vertical band allocated to this subtree
+  // `allocH`  : total height allocated (= subtreeH(id))
+  function placeSubtree(id, depth, topY, allocH) {
+    const node = S.nodes[id]; if (!node) return;
+
+    // Vertically centre the node within its allocated band
+    const nodeY = topY + (allocH - node.h) / 2;
+    newPos[id] = { x: levelX[depth], y: nodeY };
+
+    if (node.childIds.length === 0) return;
+
+    const totalChildH = node.childIds.reduce((s, cid) => s + subtreeH(cid), 0);
+
+    // Centre the block of children vertically relative to the parent node
+    const blockTop = topY + (allocH - totalChildH) / 2;
+    let cursor = blockTop;
+
+    for (const cid of node.childIds) {
+      const ch = subtreeH(cid);
+      placeSubtree(cid, depth + 1, cursor, ch);
+      cursor += ch;
+    }
+  }
+
+  const totalH = subtreeH(S.rootId);
+  placeSubtree(S.rootId, 0, 0, totalH);
+
+  // ── Animated transition ──────────────────────
+  const DURATION = 700;
+  const startTime = performance.now();
+
+  const fromPos = {};
+  Object.keys(newPos).forEach(id => {
+    const n = S.nodes[id];
+    fromPos[id] = { x: n.x, y: n.y };
+  });
+
+  function easeInOut(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  const btn = $('b-layout-h');
+  btn.classList.add('running');
+
+  function animFrame(now) {
+    const raw = (now - startTime) / DURATION;
+    const t   = Math.min(raw, 1);
+    const e   = easeInOut(t);
+
+    Object.keys(newPos).forEach(id => {
+      const n = S.nodes[id]; if (!n) return;
+      n.x = fromPos[id].x + (newPos[id].x - fromPos[id].x) * e;
+      n.y = fromPos[id].y + (newPos[id].y - fromPos[id].y) * e;
+    });
+
+    render();
+
+    if (t < 1) {
+      requestAnimationFrame(animFrame);
+    } else {
+      // Lock exact final positions
+      Object.keys(newPos).forEach(id => {
+        const n = S.nodes[id];
+        if (n) { n.x = newPos[id].x; n.y = newPos[id].y; }
+      });
+      render();
+      fitToView();
+      btn.classList.remove('running');
+      showToast('✓ Organigramme horizontal — tout dans la fenêtre', '#55efc4');
+    }
+  }
+
+  requestAnimationFrame(animFrame);
+}
 // ═══════════════════════════════════════════════
 function init() {
 
