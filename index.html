@@ -134,12 +134,26 @@ body {
   background: #1a1a2e;
   border: 2px solid var(--accent);
   border-radius: 8px;
-  padding: 3px 10px;
+  padding: 6px 10px;
   color: var(--text);
   font-family: 'Lato','DM Sans', sans-serif;
   outline: none; z-index: 999;
   min-width: 80px;
+  min-height: 32px;
   box-shadow: 0 0 20px var(--accent-glow);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+  user-select: text;
+}
+/* Bold / Italic toggle buttons */
+.btn.fmt-btn { min-width: 32px; justify-content: center; padding: 5px 8px; font-size: 13px; }
+.btn.fmt-btn.active {
+  background: #2a1f5a;
+  border-color: #a29bfe;
+  color: #a29bfe;
+  box-shadow: 0 0 8px rgba(162,155,254,0.35);
 }
 
 /* ── CONTEXT MENU ────────────────────────────── */
@@ -320,6 +334,8 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
     <input type="range" id="p-size" min="10" max="26" value="14">
     <span id="size-val">14</span>
   </div>
+  <button class="btn fmt-btn" id="b-bold"   title="Gras sur la sélection — ouvrir l'éditeur puis sélectionner du texte"><b>G</b></button>
+  <button class="btn fmt-btn" id="b-italic" title="Italique sur la sélection — ouvrir l'éditeur puis sélectionner du texte"><i>I</i></button>
 
   <div class="sep"></div>
   <button class="btn" id="b-center">
@@ -388,7 +404,7 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
     <span class="hint">Suppr</span> effacer ·
     <span class="hint">Ctrl+C/V</span> copier/coller ·
     <span class="hint">Alt+C/V</span> format ·
-    <span class="hint">Double-clic</span> éditer ·
+    <span class="hint">Double-clic</span> éditer (Entrée=saut de ligne, Ctrl+Entrée=valider, sélectionner+G/I=gras/italique) ·
     <span class="hint">Molette</span> zoom ·
     <span class="hint">Espace</span> centrer ·
     <span class="hint">Ctrl+L</span> auto-orga ·
@@ -399,7 +415,7 @@ body.painting .mind-node:hover { opacity: 1; outline: 2px dashed #a29bfe; outlin
 </div>
 
 <!-- INLINE EDITOR -->
-<input id="editor" type="text" />
+<div id="editor" contenteditable="true" spellcheck="false"></div>
 
 <!-- TOAST -->
 <div id="toast"></div>
@@ -440,9 +456,88 @@ function cloneDeep(obj) { return JSON.parse(JSON.stringify(obj)); }
 
 // Measure text width with a hidden canvas
 const _mc = document.createElement('canvas').getContext('2d');
-function textWidth(text, size, family) {
-  _mc.font = `${size}px "${family}"`;
+function textWidth(text, size, family, bold = false, italic = false) {
+  _mc.font = `${italic?'italic ':''}${bold?'bold ':''}${size}px "${family}"`;
   return _mc.measureText(text).width;
+}
+
+// ── Rich-text helpers ──────────────────────────────────────────────────────
+// Ensure node always has a valid segments array (migration from old plain-label nodes)
+function getSegments(node) {
+  if (!node.segments || !Array.isArray(node.segments) || node.segments.length === 0) {
+    node.segments = [{ text: node.label || '', bold: false, italic: false }];
+  }
+  return node.segments;
+}
+
+// Plain text from segments (for status bar, label fallback)
+function segmentsToPlain(segs) {
+  return segs.map(s => s.text).join('');
+}
+
+// Segments → HTML for contenteditable
+function segmentsToHtml(segs) {
+  return segs.map(seg => {
+    let txt = seg.text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+    if (seg.bold && seg.italic) return `<b><i>${txt}</i></b>`;
+    if (seg.bold)   return `<b>${txt}</b>`;
+    if (seg.italic) return `<i>${txt}</i>`;
+    return txt;
+  }).join('');
+}
+
+// contenteditable innerHTML → segments
+function htmlToSegments(div) {
+  const TEXT_NODE    = 3;   // window.Node.TEXT_NODE  (évite le conflit avec class Node)
+  const ELEMENT_NODE = 1;   // window.Node.ELEMENT_NODE
+  const segs = [];
+  function push(text, bold, italic) {
+    if (!text) return;
+    const last = segs[segs.length - 1];
+    if (last && last.bold === bold && last.italic === italic) {
+      last.text += text;
+    } else {
+      segs.push({ text, bold, italic });
+    }
+  }
+  function walk(node, bold, italic) {
+    if (node.nodeType === TEXT_NODE) {
+      push(node.textContent, bold, italic);
+      return;
+    }
+    if (node.nodeType !== ELEMENT_NODE) return;
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'br') { push('\n', bold, italic); return; }
+    const b2 = bold   || tag === 'b' || tag === 'strong';
+    const i2 = italic || tag === 'i' || tag === 'em';
+    // Un nouveau <div> dans contenteditable = saut de ligne (comportement Chrome)
+    if (tag === 'div' && segs.length > 0) push('\n', b2, i2);
+    node.childNodes.forEach(c => walk(c, b2, i2));
+  }
+  div.childNodes.forEach(c => walk(c, false, false));
+  // Supprimer le saut de ligne final parasite
+  if (segs.length && segs[segs.length-1].text.endsWith('\n')) {
+    segs[segs.length-1].text = segs[segs.length-1].text.slice(0, -1);
+    if (!segs[segs.length-1].text) segs.pop();
+  }
+  return segs.length ? segs : [{ text: '', bold: false, italic: false }];
+}
+
+// Build "lines" array: each line is an array of {text, bold, italic} runs
+function buildLines(segs) {
+  const lines = [[]];
+  for (const seg of segs) {
+    const parts = seg.text.split('\n');
+    lines[lines.length-1].push({ text: parts[0], bold: seg.bold, italic: seg.italic });
+    for (let i = 1; i < parts.length; i++) {
+      lines.push([{ text: parts[i], bold: seg.bold, italic: seg.italic }]);
+    }
+  }
+  return lines;
 }
 
 // ═══════════════════════════════════════════════
@@ -460,6 +555,7 @@ class Node {
     this.textColor  = '#ffffff';
     this.fontSize   = 14;
     this.fontFamily = 'DM Sans';
+    this.segments   = [{ text: label, bold: false, italic: false }];
     this.w          = 0;   // computed
     this.h          = 0;   // computed
   }
@@ -513,9 +609,14 @@ function centerView() {
 const PX = 18, PY = 9, RADIUS = 9;
 
 function computeSize(node) {
-  const tw = textWidth(node.label, node.fontSize, node.fontFamily);
-  node.w = Math.max(tw + PX * 2, 70);
-  node.h = node.fontSize + PY * 2 + 2;
+  const lines = buildLines(getSegments(node));
+  const lineH = node.fontSize * 1.5;
+  const maxW  = Math.max(...lines.map(line =>
+    line.reduce((s, run) =>
+      s + textWidth(run.text || ' ', node.fontSize, node.fontFamily, run.bold, run.italic), 0)
+  ));
+  node.w = Math.max(maxW + PX * 2, 70);
+  node.h = Math.round(lines.length * lineH) + PY * 2;
 }
 
 function render() {
@@ -572,18 +673,40 @@ function drawNode(node) {
   }
   g.appendChild(r);
 
-  // Label
-  const t = document.createElementNS(NS, 'text');
-  t.setAttribute('x', node.x + node.w / 2);
-  t.setAttribute('y', node.y + node.h / 2);
-  t.setAttribute('text-anchor', 'middle');
-  t.setAttribute('dominant-baseline', 'central');
-  t.setAttribute('fill', node.textColor);
-  t.setAttribute('font-size', node.fontSize);
-  t.setAttribute('font-family', `"${node.fontFamily}", sans-serif`);
-  t.setAttribute('pointer-events', 'none');
-  t.textContent = node.label;
-  g.appendChild(t);
+  // Label — rich text (segments, multi-line)
+  {
+    const segs  = getSegments(node);
+    const lines = buildLines(segs);
+    const lineH = node.fontSize * 1.5;
+    const totalH = lines.length * lineH;
+    const startY = node.y + node.h / 2 - totalH / 2 + lineH / 2;
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('pointer-events', 'none');
+    t.setAttribute('font-size',   node.fontSize);
+    t.setAttribute('font-family', `"${node.fontFamily}", sans-serif`);
+    lines.forEach((line, li) => {
+      const lineW = line.reduce((s, run) =>
+        s + textWidth(run.text, node.fontSize, node.fontFamily, run.bold, run.italic), 0);
+      let curX = node.x + node.w / 2 - lineW / 2;
+      const y  = startY + li * lineH;
+      line.forEach(run => {
+        const ts = document.createElementNS(NS, 'tspan');
+        ts.setAttribute('x',                 curX);
+        ts.setAttribute('y',                 y);
+        ts.setAttribute('text-anchor',        'start');
+        ts.setAttribute('dominant-baseline',  'central');
+        ts.setAttribute('fill',               node.textColor);
+        ts.setAttribute('font-size',          node.fontSize);
+        ts.setAttribute('font-family',        `"${node.fontFamily}", sans-serif`);
+        if (run.bold)   ts.setAttribute('font-weight', 'bold');
+        if (run.italic) ts.setAttribute('font-style',  'italic');
+        ts.textContent = run.text || '';
+        t.appendChild(ts);
+        curX += textWidth(run.text, node.fontSize, node.fontFamily, run.bold, run.italic);
+      });
+    });
+    g.appendChild(t);
+  }
 
   // Events
   g.addEventListener('mousedown',   e => onNodeDown(e, node.id));
@@ -631,7 +754,7 @@ function applyFormat(id) {
   n.textColor  = S.fmtClip.textColor;
   n.fontSize   = S.fmtClip.fontSize;
   n.fontFamily = S.fmtClip.fontFamily;
-  // Stay in painter mode for multi-apply; Échap or re-click button to exit
+  // Keep segments text but update their font family / size visually via node props
   select(id);
 }
 
@@ -668,30 +791,80 @@ function startEdit(id) {
   const svgRect = svg.getBoundingClientRect();
   const ex = svgRect.left + S.panX + node.x * S.zoom;
   const ey = svgRect.top  + S.panY + node.y * S.zoom;
-  editor.style.display  = 'block';
-  editor.style.left     = ex + 'px';
-  editor.style.top      = ey + 'px';
-  editor.style.width    = Math.max(node.w * S.zoom, 100) + 'px';
-  editor.style.height   = (node.h * S.zoom) + 'px';
-  editor.style.fontSize = (node.fontSize * S.zoom) + 'px';
-  editor.value = node.label;
-  editor.focus(); editor.select();
+  editor.style.display    = 'block';
+  editor.style.left       = ex + 'px';
+  editor.style.top        = ey + 'px';
+  editor.style.width      = Math.max(node.w * S.zoom, 100) + 'px';
+  editor.style.minHeight  = Math.max(node.h * S.zoom, 32) + 'px';
+  editor.style.fontSize   = (node.fontSize * S.zoom) + 'px';
+  editor.style.fontFamily = `"${node.fontFamily}", sans-serif`;
+  editor.innerHTML = segmentsToHtml(getSegments(node));
+  editor.focus();
+  // Place cursor at end
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(range);
 }
 
 function commitEdit() {
   if (!editId) return;
   const node = S.nodes[editId];
-  if (node) node.label = editor.value.trim() || node.label;
+  if (node) {
+    const segs  = htmlToSegments(editor);
+    const plain = segmentsToPlain(segs);
+    if (plain.trim()) {                  // au moins un caractère non-espace
+      node.segments = segs;
+      node.label    = plain;
+    } else if (!plain) {                 // vide total → on garde l'ancien label
+      // ne rien changer
+    }
+  }
   editor.style.display = 'none';
   editId = null;
   render();
 }
 
 editor.addEventListener('keydown', e => {
-  if (e.key === 'Enter')  { e.preventDefault(); commitEdit(); }
-  if (e.key === 'Escape') { editor.style.display = 'none'; editId = null; }
+  const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13;
+  const isEsc   = e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27;
+  const isTab   = e.key === 'Tab'    || e.code === 'Tab'    || e.keyCode === 9;
+
+  // Ctrl+Enter OU Shift+Enter OU Tab → valider
+  if ((isEnter && (e.ctrlKey || e.metaKey || e.shiftKey)) || isTab) {
+    e.preventDefault();
+    e.stopPropagation();
+    commitEdit();
+    return;
+  }
+  // Echap → annuler
+  if (isEsc) {
+    e.preventDefault();
+    e.stopPropagation();
+    editor.style.display = 'none';
+    editId = null;
+    render();
+    return;
+  }
+  // Ctrl+B / Ctrl+I : gras/italique sur la selection
+  if (e.ctrlKey && (e.key === 'b' || e.keyCode === 66)) { e.preventDefault(); document.execCommand('bold');   updateFmtBtns(); }
+  if (e.ctrlKey && (e.key === 'i' || e.keyCode === 73)) { e.preventDefault(); document.execCommand('italic'); updateFmtBtns(); }
 });
-editor.addEventListener('blur', commitEdit);
+editor.addEventListener('blur', e => {
+  // Don't commit if clicking B/I buttons
+  if (e.relatedTarget && (e.relatedTarget.id === 'b-bold' || e.relatedTarget.id === 'b-italic')) return;
+  commitEdit();
+});
+editor.addEventListener('keyup',    updateFmtBtns);
+editor.addEventListener('mouseup',  updateFmtBtns);
+editor.addEventListener('selectionchange', updateFmtBtns);
+
+// Reflect current selection bold/italic state on the toolbar buttons
+function updateFmtBtns() {
+  $("b-bold").classList.toggle('active',   document.queryCommandState('bold'));
+  $("b-italic").classList.toggle('active', document.queryCommandState('italic'));
+}
 
 // ═══════════════════════════════════════════════
 //  NODE OPERATIONS
@@ -863,11 +1036,16 @@ document.addEventListener('click', hideCtx);
 // ═══════════════════════════════════════════════
 function syncProps() {
   const n = S.nodes[S.selId]; if (!n) return;
-  $('p-bg').value  = n.color;
-  $('p-txt').value = n.textColor;
-  $('p-font').value = n.fontFamily;
-  $('p-size').value = n.fontSize;
-  $('size-val').textContent = n.fontSize;
+  $("p-bg").value  = n.color;
+  $("p-txt").value = n.textColor;
+  $("p-font").value = n.fontFamily;
+  $("p-size").value = n.fontSize;
+  $("size-val").textContent = n.fontSize;
+  // B/I buttons reflect selection state only while editor is open
+  if (editor.style.display !== 'block') {
+    $("b-bold").classList.remove('active');
+    $("b-italic").classList.remove('active');
+  }
 }
 
 function onPropChange() {
@@ -881,6 +1059,24 @@ function onPropChange() {
 }
 
 ['p-bg','p-txt','p-font','p-size'].forEach(id => $(id).addEventListener('input', onPropChange));
+
+// B / I toolbar buttons: apply bold/italic to current selection inside the open editor
+$("b-bold").addEventListener("mousedown", e => {
+  e.preventDefault();   // keep focus on editor
+  if (editor.style.display === 'block') {
+    editor.focus();
+    document.execCommand('bold');
+    updateFmtBtns();
+  }
+});
+$("b-italic").addEventListener("mousedown", e => {
+  e.preventDefault();
+  if (editor.style.display === 'block') {
+    editor.focus();
+    document.execCommand('italic');
+    updateFmtBtns();
+  }
+});
 
 // ═══════════════════════════════════════════════
 //  TOOLBAR BUTTONS
@@ -1013,6 +1209,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Enter' && !e.ctrlKey) { e.preventDefault(); addSibling(id); }
   else if (e.key === 'Delete' || e.key === 'Backspace') { deleteNode(id); }
   else if (e.key === 'F2') { startEdit(id); }
+  else if (e.ctrlKey && e.key === 'b') { e.preventDefault(); /* handled inside editor */ }
+  else if (e.ctrlKey && e.key === 'i') { e.preventDefault(); /* handled inside editor */ }
   else if (e.key === ' ')  { e.preventDefault(); centerView(); }
   else if (e.ctrlKey && e.key === 'l') { e.preventDefault(); autoLayout(); }
   else if (e.ctrlKey && e.key === 'h') { e.preventDefault(); autoLayoutHorizontal(); }
@@ -1033,7 +1231,8 @@ document.addEventListener('keydown', e => {
 function updateStatus() {
   $('s-count').textContent = 'Nœuds : ' + Object.keys(S.nodes).length;
   const n = S.nodes[S.selId];
-  $('s-sel').innerHTML = 'Sélection : <span class="hint">' + (n ? n.label : 'aucune') + '</span>';
+  const lbl = n ? (n.label || segmentsToPlain(getSegments(n))) : 'aucune';
+  $("s-sel").innerHTML = 'Sélection : <span class="hint">' + lbl + '</span>';
 }
 
 // ═══════════════════════════════════════════════
@@ -1314,6 +1513,12 @@ function init() {
       const state = JSON.parse(savedEl.textContent);
       S.nodes  = state.nodes;
       S.rootId = state.rootId;
+      // Migrate old nodes that have no segments
+      Object.values(S.nodes).forEach(n => {
+        if (!n.segments || !Array.isArray(n.segments)) {
+          n.segments = [{ text: n.label || '', bold: false, italic: false }];
+        }
+      });
       S.panX   = state.panX ?? 0;
       S.panY   = state.panY ?? 0;
       S.zoom   = state.zoom ?? 1;
